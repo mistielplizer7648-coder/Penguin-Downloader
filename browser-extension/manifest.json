@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Penguin Downloader 3.1",
+  "version": "3.2.1",
+  "description": "把浏览器下载、页面链接和网络视频发送到本机 Penguin Downloader；检测到网页视频时显示悬浮选择下载入口。",
+  "permissions": ["downloads", "contextMenus", "tabs", "activeTab", "storage", "scripting", "cookies", "webRequest"],
+  "host_permissions": ["http://127.0.0.1:17777/*", "http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Penguin Downloader 3.1", "default_popup": "popup.html" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
