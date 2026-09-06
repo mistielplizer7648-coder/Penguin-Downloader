@@ -1,11 +1,23 @@
 const APP = 'http://127.0.0.1:17777';
 const SNIFF_PREFIX = 'sniff_';
 const recentDownloadDispatches = new Map();
+const nativeFallbackUrls = new Map();
+let interceptEnabled = true;
 const interestingExt = /\.(zip|7z|rar|exe|msi|iso|img|tar|gz|bz2|xz|pdf|mp4|mkv|mov|webm|mp3|wav|flac|aac|m4a|ogg|bin|gguf|safetensors|onnx|dmg|pkg|apk|m3u8|mpd)(\?|#|$)/i;
+
+chrome.storage.local.get(['intercept']).then(x => {
+  interceptEnabled = x.intercept !== false;
+}).catch(() => {});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.intercept) {
+    interceptEnabled = changes.intercept.newValue !== false;
+  }
+});
 
 async function appOnline() {
   try {
-    const r = await fetch(APP + '/ping', { cache: 'no-store' });
+    const r = await fetch(APP + '/ping', { cache: 'no-store', targetAddressSpace: 'loopback' });
     return r.ok;
   } catch (_) { return false; }
 }
@@ -37,6 +49,7 @@ async function sendToApp(url, filename = '', referrer = '', sourcePage = '', con
     const cookie = await cookieHeader(url);
     const r = await fetch(APP + '/download', {
       method: 'POST',
+      targetAddressSpace: 'loopback',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         url,
@@ -158,6 +171,7 @@ async function pushSniffToApp(item) {
     const cookie = await cookieHeader(item.url);
     await fetch(APP + '/sniff', {
       method: 'POST',
+      targetAddressSpace: 'loopback',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         url: item.url,
@@ -235,26 +249,84 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (url) await sendToApp(url, '', info.pageUrl || tab?.url || '', tab?.url || info.pageUrl || '', '', 'context-menu');
 });
 
-chrome.downloads.onCreated.addListener(async item => {
-  const cfg = await chrome.storage.local.get(['intercept']);
-  if (cfg.intercept === false) return;
-  if (!item.url || !/^https?:\/\//i.test(item.url)) return;
-  if (!(await appOnline())) return;
-  const result = await sendToApp(
-    item.url,
-    item.filename ? item.filename.split(/[\\/]/).pop() : '',
-    item.referrer || '',
-    item.referrer || '',
-    item.mime || '',
-    'browser-download'
-  );
-  if (result?.ok) {
-    try { await chrome.downloads.cancel(item.id); } catch (_) {}
-    try { await chrome.downloads.erase({ id: item.id }); } catch (_) {}
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  if (!interceptEnabled) {
+    suggest();
+    return;
   }
+
+  const originalUrl = String(item.url || '');
+  const finalUrl = String(item.finalUrl || '');
+  const downloadUrl = /^https?:\/\//i.test(finalUrl) ? finalUrl : originalUrl;
+  if (!downloadUrl || !/^https?:\/\//i.test(downloadUrl)) {
+    suggest();
+    return;
+  }
+
+  let finished = false;
+  const releaseChrome = () => {
+    if (finished) return;
+    finished = true;
+    try { suggest(); } catch (_) {}
+  };
+
+  // onDeterminingFilename 比 onCreated 更适合作为接管点：
+  // 只要异步监听器还没有调用 suggest()，Chrome 就不会继续完成文件名/保存位置流程。
+  // 因此这里先交给 Penguin Downloader，成功后取消原生任务；失败才放行 Chrome。
+  (async () => {
+    const fileName = item.filename ? item.filename.split(/[\\/]/).pop() : '';
+    const result = await sendToApp(
+      downloadUrl,
+      fileName,
+      item.referrer || '',
+      item.referrer || '',
+      item.mime || '',
+      'browser-download'
+    );
+
+    if (result?.ok) {
+      try { await chrome.downloads.cancel(item.id); } catch (_) {}
+      try { await chrome.downloads.erase({ id: item.id }); } catch (_) {}
+      releaseChrome();
+      return;
+    }
+
+    // 本机下载器不可用、接管关闭或交接失败时，维持 Chrome 原生下载行为。
+    releaseChrome();
+  })().catch(() => releaseChrome());
+
+  // 异步调用 suggest()，必须返回 true 告诉 Chrome 等待我们的决定。
+  return true;
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+  if (msg?.type === 'intercept-link') {
+    (async () => {
+      const cfg = await chrome.storage.local.get(['intercept']);
+      if (cfg.intercept === false) {
+        respond({ handled: false, reason: 'intercept-disabled' });
+        return;
+      }
+      if (!msg.url || !/^https?:\/\//i.test(msg.url)) {
+        respond({ handled: false, reason: 'unsupported-url' });
+        return;
+      }
+      if (!(await appOnline())) {
+        respond({ handled: false, reason: 'app-offline' });
+        return;
+      }
+      const result = await sendToApp(
+        msg.url,
+        msg.filename || '',
+        msg.referrer || sender.tab?.url || '',
+        msg.sourcePage || sender.tab?.url || '',
+        msg.contentType || '',
+        'link-click'
+      );
+      respond({ handled: !!result?.ok, result });
+    })().catch(error => respond({ handled: false, reason: String(error?.message || error) }));
+    return true;
+  }
   if (msg?.type === 'send') {
     sendToApp(msg.url, msg.filename || '', msg.referrer || '', msg.sourcePage || '', msg.contentType || '', msg.trigger || 'manual').then(respond);
     return true;

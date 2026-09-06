@@ -4,10 +4,42 @@ const intercept = document.getElementById('intercept');
 let pageData = null;
 let activeTab = null;
 
+const APP = 'http://127.0.0.1:17777';
+
+async function directLoopbackPing() {
+  try {
+    // Chrome 142+ 的 Local Network Access 要求先由一个可见文档触发本机/loopback 权限。
+    // popup 是用户主动打开的扩展文档；这里成功一次后，同一扩展 origin 的 Service Worker
+    // 才能在后续 downloads 事件里稳定访问 127.0.0.1。
+    const r = await fetch(APP + '/ping', {
+      cache: 'no-store',
+      targetAddressSpace: 'loopback'
+    });
+    if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+    const data = await r.json().catch(() => ({}));
+    return { ok: true, data };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error || 'loopback access failed') };
+  }
+}
+
 async function ping() {
-  const r = await chrome.runtime.sendMessage({ type: 'ping' });
-  statusEl.textContent = r?.ok ? 'Penguin Downloader 3.0 Turbo 已连接 · 网络嗅探可用' : '未连接：请先启动 Penguin Downloader 3.0 Turbo';
-  statusEl.className = 'status ' + (r?.ok ? 'ok' : 'bad');
+  const direct = await directLoopbackPing();
+  if (direct.ok) {
+    // 再验证后台 Service Worker 也已经能访问本机；这一步同时验证真实下载接管链路。
+    let worker = null;
+    try { worker = await chrome.runtime.sendMessage({ type: 'ping' }); } catch (_) {}
+    const ready = worker?.ok === true;
+    statusEl.textContent = ready
+      ? 'Penguin Downloader 已连接 · 浏览器接管已就绪'
+      : '本机访问已授权，正在等待后台接管服务就绪';
+    statusEl.className = 'status ' + (ready ? 'ok' : 'bad');
+    return;
+  }
+
+  statusEl.textContent = '未获得本机访问权限：请允许 Chrome 访问本机设备/本地网络，然后重新打开插件。';
+  statusEl.className = 'status bad';
+  statusEl.title = direct.error || '';
 }
 
 async function collect() {
