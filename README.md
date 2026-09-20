@@ -16,7 +16,21 @@ Penguin Downloader is a Windows download manager designed to make everyday file 
 **[Download Penguin Downloader from Microsoft Store](https://apps.microsoft.com/detail/9NK598226BN3?hl=en-us&gl=US)**
 
 Using the Microsoft Store gives you the official packaged release and the normal Windows Store installation/update experience.
+## Screenshots
 
+### Main Interface
+
+<p align="center">
+  <img src="images/penguin-main-en.png" width="49%" alt="Penguin Downloader English Interface">
+  <img src="images/penguin-main-ch.png" width="49%" alt="Penguin Downloader Chinese Interface">
+</p>
+
+### Downloading
+
+<p align="center">
+  <img src="images/penguin-downloading.png" width="49%" alt="Penguin Downloader Downloading">
+  <img src="images/penguin-downloading.jpeg" width="49%" alt="Penguin Downloader Download Details">
+</p>
 ## Highlights
 
 - Windows-focused download manager
