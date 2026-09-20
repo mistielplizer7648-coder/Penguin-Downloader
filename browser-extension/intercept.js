@@ -1,8 +1,9 @@
 (() => {
-  const DIRECT_DOWNLOAD_EXT = /\.(zip|7z|rar|exe|msi|iso|img|tar|gz|bz2|xz|pdf|mp4|mkv|mov|webm|mp3|wav|flac|aac|m4a|ogg|bin|gguf|safetensors|onnx|dmg|pkg|apk)(?:[?#]|$)/i;
-  const DOWNLOAD_TEXT = /(download|下载|本地下载|高速下载|电信下载|联通下载|网通下载|移动下载|镜像下载|立即下载|点击下载)/i;
-  const DOWNLOAD_PATH = /\/(?:download|downloads|down|dl|get|fetch|attachment|file)(?:\/|$)/i;
-  const PAGE_EXT = /\.(?:html?|shtml|php|asp|aspx|jsp)(?:[?#]|$)/i;
+  // Only pre-intercept links that are unambiguously downloads.
+  // Do NOT use button text, generic /download|/get|/file paths, query names,
+  // or cross-origin navigation as takeover signals: modern sites commonly use
+  // those patterns for ordinary HTML routes and SPA navigation.
+  const DIRECT_DOWNLOAD_EXT = /\.(zip|7z|rar|exe|msi|iso|img|tar|gz|bz2|xz|bin|gguf|safetensors|onnx|dmg|pkg|apk)(?:[?#]|$)/i;
 
   function isHttpUrl(value) {
     return /^https?:\/\//i.test(String(value || ''));
@@ -16,50 +17,16 @@
     return target?.closest?.('a[href]') || null;
   }
 
-  function downloadText(anchor) {
-    return [
-      anchor.textContent,
-      anchor.getAttribute('title'),
-      anchor.getAttribute('aria-label'),
-      anchor.getAttribute('class'),
-      anchor.querySelector?.('[title]')?.getAttribute?.('title'),
-      anchor.querySelector?.('[aria-label]')?.getAttribute?.('aria-label')
-    ].filter(Boolean).join(' ');
-  }
-
-  function querySignalsDownload(url) {
-    try {
-      const u = new URL(url, location.href);
-      for (const key of ['download', 'attachment', 'dl']) {
-        if (!u.searchParams.has(key)) continue;
-        const value = String(u.searchParams.get(key) || '').toLowerCase();
-        if (value === '' || value === '1' || value === 'true' || value === 'yes') return true;
-      }
-      return u.searchParams.has('filename') || u.searchParams.has('file_name');
-    } catch (_) {
-      return false;
-    }
-  }
-
   function isLikelyDownload(anchor, url) {
     if (!anchor || !isHttpUrl(url)) return false;
+
+    // Explicit author intent is always safe to treat as a download.
     if (anchor.hasAttribute('download')) return true;
-    if (DIRECT_DOWNLOAD_EXT.test(url)) return true;
-    if (querySignalsDownload(url)) return true;
 
-    let pathLooksDownload = false;
-    let crossOrigin = false;
-    try {
-      const u = new URL(url, location.href);
-      pathLooksDownload = DOWNLOAD_PATH.test(u.pathname);
-      crossOrigin = u.origin !== location.origin;
-    } catch (_) {}
-
-    const textLooksDownload = DOWNLOAD_TEXT.test(downloadText(anchor));
-    if (pathLooksDownload && !PAGE_EXT.test(url)) return true;
-    if (textLooksDownload && pathLooksDownload) return true;
-    if (textLooksDownload && crossOrigin && !PAGE_EXT.test(url)) return true;
-    return false;
+    // Pre-intercept only clearly non-page file types. Browser-confirmed downloads
+    // (including PDF/media, attachment responses and extensionless downloads)
+    // are still handled by background.js via chrome.downloads.onDeterminingFilename.
+    return DIRECT_DOWNLOAD_EXT.test(url);
   }
 
   function suggestedFilename(anchor, url) {
@@ -100,7 +67,8 @@
     const url = anchor.href;
     if (!isLikelyDownload(anchor, url)) return;
 
-    // Capture before site JavaScript/default navigation can create a native Chrome download.
+    // Only strong download signals reach this point, so ordinary page navigation
+    // is never prevented by Penguin Downloader.
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -116,7 +84,7 @@
       if (response?.handled) return;
     } catch (_) {}
 
-    // Downloader unavailable/disabled: preserve normal browser behavior.
+    // Downloader unavailable/disabled: preserve native browser download/navigation.
     nativeFallback(anchor, url);
   }, true);
 })();

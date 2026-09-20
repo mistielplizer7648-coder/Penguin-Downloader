@@ -2,6 +2,7 @@ const APP = 'http://127.0.0.1:17777';
 const SNIFF_PREFIX = 'sniff_';
 const recentDownloadDispatches = new Map();
 const nativeFallbackUrls = new Map();
+const NATIVE_FALLBACK_TTL_MS = 30000;
 let interceptEnabled = true;
 const interestingExt = /\.(zip|7z|rar|exe|msi|iso|img|tar|gz|bz2|xz|pdf|mp4|mkv|mov|webm|mp3|wav|flac|aac|m4a|ogg|bin|gguf|safetensors|onnx|dmg|pkg|apk|m3u8|mpd)(\?|#|$)/i;
 
@@ -263,6 +264,19 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     return;
   }
 
+  // Penguin 已经成功接管过一次相同的浏览器下载时，为用户保留一个明确的
+  // “退出接管”通道：如果用户在 Penguin 对话框里点了取消，再次执行
+  // “另存为...”时，这一次直接放行 Chrome/Windows 原生另存为。
+  // 这是一次性的；放行后第三次仍可重新由 Penguin 接管。
+  const fallbackUntil = nativeFallbackUrls.get(downloadUrl) || 0;
+  if (fallbackUntil > Date.now()) {
+    nativeFallbackUrls.delete(downloadUrl);
+    recentDownloadDispatches.delete(`browser-download|${downloadUrl}`);
+    suggest();
+    return;
+  }
+  if (fallbackUntil) nativeFallbackUrls.delete(downloadUrl);
+
   let finished = false;
   const releaseChrome = () => {
     if (finished) return;
@@ -284,7 +298,23 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
       'browser-download'
     );
 
+    // 同一 URL 在短时间内再次触发时，sendToApp 的去重不能被当成
+    // “已再次接管”。否则 Chrome 会被取消，但 Penguin 也不会再弹窗，用户
+    // 就会遇到“第二次另存为完全没反应”。命中去重时必须直接放行原生下载。
+    if (result?.deduplicated) {
+      recentDownloadDispatches.delete(`browser-download|${downloadUrl}`);
+      releaseChrome();
+      return;
+    }
+
     if (result?.ok) {
+      nativeFallbackUrls.set(downloadUrl, Date.now() + NATIVE_FALLBACK_TTL_MS);
+      if (nativeFallbackUrls.size > 200) {
+        const now = Date.now();
+        for (const [url, expiresAt] of nativeFallbackUrls) {
+          if (expiresAt <= now) nativeFallbackUrls.delete(url);
+        }
+      }
       try { await chrome.downloads.cancel(item.id); } catch (_) {}
       try { await chrome.downloads.erase({ id: item.id }); } catch (_) {}
       releaseChrome();
